@@ -15,13 +15,33 @@
 
 ## 安装
 
-在 DSH 中使用插件管理器安装本目录（绝对路径）：
+克隆仓库并进入 `package.json` 所在的目录：
 
-```text
-plugin_manager action=install_bundle target=/home/meqjn/my-project/localshare-dsh-plugin
+```bash
+git clone <仓库地址> localshare-dsh-plugin
+cd localshare-dsh-plugin
+pwd   # 记下这个绝对路径
 ```
 
-安装后打开 **Settings → LocalShare**。如果页面没有立即出现，刷新一次 Web 页面。
+然后在带 Web UI 的 DSH profile（通常是 `web`）中，用插件管理器安装**克隆目录的绝对路径**：
+
+```text
+plugin_manager action=install_bundle target=/absolute/path/to/localshare-dsh-plugin
+```
+
+- `target` 必须是 `package.json` 所在的目录，且建议使用绝对路径。
+- 插件没有构建步骤，也没有 npm 运行时依赖；克隆后不需要先执行 `pnpm install`。
+- 需要在带 Web UI 的 profile 中安装。Host 半依赖 `webServer` 和 `connection`，纯 CLI/无 Web 的 profile 不会激活它。
+- 如果通过 Agent 执行，`install_bundle` 可能需要安装权限或审批；也可以让用户在 Plugin Manager 中选择本地目录安装。
+- 安装后打开 **Settings → LocalShare**。如果页面没有立即出现，刷新一次 Web 页面。
+
+更新已安装的克隆：
+
+```bash
+git pull
+```
+
+链接安装的 Host 代码需要重启 DSH（或在 Plugin Manager 中重新加载插件）才会换成新模块；浏览器端刷新页面即可加载新的 `client.js`。
 
 ## 配置
 
