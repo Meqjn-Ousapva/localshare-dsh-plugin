@@ -1,0 +1,6 @@
+- insert:
+    - id: localshare
+      name: '@local/localshare'
+      config:
+        port: 17817
+        bind: 0.0.0.0

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "LocalShare",
+    "description": "通过显式 IP 发现节点，并在多台 DeepSeek Harness 机器之间只读共享对话。"
+  }
+}
