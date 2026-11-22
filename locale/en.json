@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "LocalShare",
-    "description": "Discovers peers by explicit IP and shares read-only conversations between DeepSeek Harness machines."
+    "description": "Discovers peers by explicit IP, shares read-only conversations, and imports them as local sessions on DeepSeek Harness machines."
   }
 }

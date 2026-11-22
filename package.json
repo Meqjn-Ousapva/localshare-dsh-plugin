@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Manual peer discovery and read-only conversation sharing between DeepSeek Harness machines.",
+  "description": "Manual peer discovery, read-only conversation sharing, and local conversation import between DeepSeek Harness machines.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

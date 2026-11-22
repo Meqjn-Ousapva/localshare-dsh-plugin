@@ -1,7 +1,7 @@
 /** Host-half wiring test with a minimal Cordis-shaped context. */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { apply } from '../index.js'
@@ -60,7 +60,36 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
       return ids.map(id => ({ sessionId: id, status: 'fulfilled', value: { title: { title: 'Demo conversation' } } }))
     },
   }
+  const createdSessions = []
+  let appendedEvents = null
+  const sessionPersistence = {
+    async list() { return [] },
+    async stat(id) {
+      const header = createdSessions.find(value => value.id === id)
+      return header === undefined ? undefined : { header }
+    },
+    async create(header) {
+      createdSessions.push(header)
+      return {
+        id: header.id,
+        header,
+        async append(events) { appendedEvents = events },
+        async flush() {},
+        async close() {},
+      }
+    },
+  }
+  const workspaceCalls = []
+  const workspaceRegistry = {
+    async create(directory, title) {
+      workspaceCalls.push({ directory, title })
+      return { id: 'ws-test', path: directory, title }
+    },
+  }
   const ctx = {
+    sessionPersistence,
+    workspaceRegistry,
+    get(name) { return this[name] },
     effect(callback) {
       const disposer = callback()
       if (typeof disposer === 'function') disposers.push(disposer)
@@ -158,6 +187,50 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   const listed = await tool.execute({ action: 'list_peers' })
   assert.equal(listed.peers.length, 1)
   assert.equal(listed.peers[0].online, true)
+
+  // Beta shares one conversation back; Alpha imports it into the temp directory.
+  await peer.publishShare({
+    sessionId: 'session-import',
+    title: 'From Beta',
+    sourceCwd: '/remote/project',
+    messages: [
+      { role: 'user', text: 'remote hello' },
+      { role: 'assistant', text: 'remote reply' },
+    ],
+  })
+  const imported = await tool.execute({
+    action: 'import_share',
+    peerId: BETA,
+    sessionId: 'session-import',
+    targetDir: directory,
+  })
+  assert.equal(imported.ok, true)
+  assert.match(imported.localSessionId, /^session-/)
+  assert.equal(imported.alreadyImported, false)
+  assert.equal(imported.sourceCwd, '/remote/project')
+  assert.equal(createdSessions.length, 1)
+  assert.equal(createdSessions[0].cwd, await realpath(directory))
+  assert.equal(createdSessions[0].isSeeded, false)
+  assert.equal(appendedEvents.at(-1).type, 'session/title')
+  assert.equal(workspaceCalls.length, 1)
+  assert.equal(workspaceCalls[0].directory, await realpath(directory))
+  assert.equal(workspaceCalls[0].title, path.basename(directory))
+
+  const importedStatus = await callRoute('/api/localshare/status')
+  assert.equal(importedStatus.json.imports.length, 1)
+  assert.equal(importedStatus.json.imports[0].sourcePeerId, BETA)
+  assert.equal(importedStatus.json.imports[0].sourceSessionId, 'session-import')
+  assert.equal(importedStatus.json.imports[0].sourceCwd, '/remote/project')
+
+  const again = await tool.execute({
+    action: 'import_share',
+    peerId: BETA,
+    sessionId: 'session-import',
+    targetDir: directory,
+  })
+  assert.equal(again.alreadyImported, true)
+  assert.equal(createdSessions.length, 1)
+  assert.equal(again.localSessionId, imported.localSessionId)
 
   const unshared = await tool.execute({ action: 'unshare_session', sessionId: 'session-1' })
   assert.equal(unshared.removed, true)

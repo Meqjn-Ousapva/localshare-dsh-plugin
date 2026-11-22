@@ -6,9 +6,12 @@
  * read-only snapshots. No broadcast, mDNS, relay, or automatic multi-subnet
  * discovery is attempted here.
  */
+import path from 'node:path'
 import { LocalShareNode, LocalShareError, DEFAULT_PORT, parseAddress, readJsonBody, sendJson } from './lib/protocol.js'
 import { loadIdentity } from './lib/identity.js'
 import { buildShareFromQuery, listShareableSessions, shareMeta } from './lib/share.js'
+import { importShareToSession } from './lib/import.js'
+import { loadImports, saveImports } from './lib/imports.js'
 
 const VERSION = '0.1.0'
 const UI_PREFIX = '/api/localshare'
@@ -82,6 +85,14 @@ function normalizeConfig(config) {
 export async function apply(ctx, config = {}) {
   const settings = normalizeConfig(config)
   const { identity, file: identityFile, warning } = await loadIdentity(settings)
+  const importsFile = path.join(path.dirname(identityFile), 'imports.json')
+  let importRecords = []
+  let importsWarning = null
+  try {
+    importRecords = await loadImports(importsFile)
+  } catch (error) {
+    importsWarning = `无法读取导入记录 ${importsFile}：${error instanceof Error ? error.message : String(error)}`
+  }
   const node = new LocalShareNode({
     identity,
     port: settings.port,
@@ -123,11 +134,61 @@ export async function apply(ctx, config = {}) {
     }
   }
 
+  const importIncomingShare = async (peerId, sessionId, targetDir) => {
+    const item = node.incoming.get(`${peerId}:${sessionId}`)
+    if (item === undefined) {
+      throw new LocalShareError('import/not-found', '没有找到这条共享，可能已被对方撤回', 404)
+    }
+    const persistence = ctx.get('sessionPersistence')
+    const existing = importRecords.find(record => record.sourcePeerId === peerId && record.sourceSessionId === sessionId)
+    if (existing !== undefined) {
+      if (persistence !== undefined) {
+        try {
+          if (await persistence.stat(existing.localSessionId) !== undefined) {
+            return { ...existing, alreadyImported: true }
+          }
+        } catch {
+          // Treat an unreadable provenance entry as stale and import anew.
+        }
+      }
+      importRecords = importRecords.filter(record => record !== existing)
+    }
+    const result = await importShareToSession({
+      share: item.share,
+      targetDir,
+      sessionPersistence: persistence,
+      workspaceRegistry: ctx.get('workspaceRegistry'),
+    })
+    const record = {
+      localSessionId: result.localSessionId,
+      workspaceId: result.workspaceId,
+      targetDir: result.targetDir,
+      sourcePeerId: peerId,
+      sourcePeerName: item.peerName,
+      sourceSessionId: sessionId,
+      sourceTitle: item.share.title,
+      sourceCwd: item.share.sourceCwd ?? null,
+      importedAt: result.importedAt,
+      messageCount: result.messageCount,
+    }
+    importRecords.unshift(record)
+    if (importRecords.length > 200) importRecords.length = 200
+    let saveWarning = null
+    try {
+      await saveImports(importsFile, importRecords)
+    } catch (error) {
+      saveWarning = `导入成功，但无法保存导入记录：${error instanceof Error ? error.message : String(error)}`
+    }
+    return { ...record, alreadyImported: false, warning: saveWarning }
+  }
+
   const status = () => ({
     ok: true,
     ...node.snapshot(),
     identityFile,
     warning,
+    imports: importRecords.slice(0, 50),
+    importsWarning,
     config: {
       port: settings.port,
       bind: settings.bind,
@@ -244,6 +305,16 @@ export async function apply(ctx, config = {}) {
         sendJson(res, 200, { ok: true, removed })
         return
       }
+      if (req.method === 'POST' && sub === '/import') {
+        const body = await readJsonBody(req, UI_BODY_BYTES)
+        const result = await importIncomingShare(
+          requireString(body.peerId, 'peerId'),
+          requireString(body.sessionId, 'sessionId'),
+          requireString(body.targetDir, 'targetDir'),
+        )
+        sendJson(res, 200, { ok: true, ...result })
+        return
+      }
       sendJson(res, 404, { ok: false, error: { code: 'ui/not-found', message: '未知的 LocalShare 接口' } })
     } catch (error) {
       const statusCode = error instanceof LocalShareError ? error.status : 500
@@ -267,18 +338,21 @@ export async function apply(ctx, config = {}) {
     name: 'localshare',
     description: 'Discover LocalShare peers on other DSH machines by explicit host:port and share read-only conversation transcripts. '
       + 'Actions: status, list_peers, add_peer (address), remove_peer (peerId), list_sessions, share_session (sessionId), '
-      + 'unshare_session (sessionId), list_shares (metadata only). Discovery is manual in this phase; the peer must also run LocalShare.',
+      + 'unshare_session (sessionId), list_shares (metadata only), import_share (peerId, sessionId, targetDir). '
+      + 'import_share creates a new local Session from a received share in an existing local directory; it copies no peer files. '
+      + 'Ask the user which local directory to use before importing. Discovery is manual in this phase; the peer must also run LocalShare.',
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['status', 'list_peers', 'add_peer', 'remove_peer', 'list_sessions', 'share_session', 'unshare_session', 'list_shares'],
+          enum: ['status', 'list_peers', 'add_peer', 'remove_peer', 'list_sessions', 'share_session', 'unshare_session', 'list_shares', 'import_share'],
           description: 'Operation to perform.',
         },
         address: { type: 'string', description: 'Peer address for add_peer, e.g. 192.168.1.23:17817.' },
         peerId: { type: 'string', description: 'Peer identity for remove_peer.' },
-        sessionId: { type: 'string', description: 'Conversation identity for share_session or unshare_session.' },
+        sessionId: { type: 'string', description: 'Conversation identity for share_session, unshare_session, or import_share.' },
+        targetDir: { type: 'string', description: 'Existing absolute local directory for import_share; ask the user to choose it.' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -312,6 +386,15 @@ export async function apply(ctx, config = {}) {
           return { ok: true, removed: await unshareSession(requireString(args.sessionId, 'sessionId')) }
         case 'list_shares':
           return { ok: true, ...node.snapshot().shares }
+        case 'import_share':
+          return {
+            ok: true,
+            ...await importIncomingShare(
+              requireString(args.peerId, 'peerId'),
+              requireString(args.sessionId, 'sessionId'),
+              requireString(args.targetDir, 'targetDir'),
+            ),
+          }
         default:
           throw new LocalShareError('tool/action', `未知操作：${action}`)
       }

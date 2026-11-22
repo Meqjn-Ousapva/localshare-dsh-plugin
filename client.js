@@ -25,6 +25,22 @@ window.__ModuleLoader__.load({
       copied: 'Copied',
       copyFailed: 'Copy failed; select the text manually',
       open: 'View',
+      importAction: 'Import',
+      importHint: 'Choose an existing local directory. This creates a new local conversation; no files are copied from the peer.',
+      sourceCwd: 'Source working directory',
+      sourceCwdMissing: 'The source did not provide a working directory.',
+      targetDir: 'Local directory',
+      targetDirPlaceholder: 'Absolute path, e.g. /home/you/project',
+      targetDirRequired: 'Choose an existing local directory first.',
+      chooseDirectory: 'Choose directory',
+      pickDirectoryUnavailable: 'This UI cannot open a directory picker; enter an absolute path.',
+      startImport: 'Import conversation',
+      importing: 'Importing...',
+      cancel: 'Cancel',
+      importedBadge: 'Imported',
+      importDone: 'Conversation imported. Opening the local session...',
+      importAlready: 'This conversation was already imported; opening it.',
+      importEmpty: 'This share has no visible messages to import.',
       noAddresses: 'No non-loopback IPv4 address was found. Check the network interface or set advertise in the plugin config.',
       secretOn: 'A shared secret is configured for the peer port.',
       secretOff: 'No shared secret is configured: any host that can reach this port may handshake. Set secret in the plugin config on both machines to restrict it.',
@@ -88,6 +104,22 @@ window.__ModuleLoader__.load({
       copied: '已复制',
       copyFailed: '复制失败，请手动选择文本',
       open: '查看',
+      importAction: '导入',
+      importHint: '选择一个已有的本机目录。导入会创建一条新的本机会话，不会复制对方文件。',
+      sourceCwd: '来源工作目录',
+      sourceCwdMissing: '来源没有提供工作目录。',
+      targetDir: '本机目录',
+      targetDirPlaceholder: '绝对路径，例如 /home/me/project',
+      targetDirRequired: '请先选择一个已有的本机目录。',
+      chooseDirectory: '选择目录',
+      pickDirectoryUnavailable: '当前界面无法打开目录选择器，请手动输入绝对路径。',
+      startImport: '导入会话',
+      importing: '导入中…',
+      cancel: '取消',
+      importedBadge: '已导入',
+      importDone: '会话已导入，正在打开本机会话…',
+      importAlready: '这条共享已经导入过，正在打开。',
+      importEmpty: '这条共享没有可导入的可见消息。',
       noAddresses: '没有找到非回环 IPv4 地址。请检查网络接口，或在插件配置中设置 advertise。',
       secretOn: '节点端口已启用共享密钥。',
       secretOff: '未设置共享密钥：任何能访问该端口的主机都可以握手。建议在两台机器的插件配置中设置相同的 secret。',
@@ -215,6 +247,8 @@ window.__ModuleLoader__.load({
      */
     function LocalShareSection(props) {
       const tr = typeof props.t === 'function' ? props.t : key => key
+      const pickDirectory = typeof props.pickDirectory === 'function' ? props.pickDirectory : undefined
+      const openSession = typeof props.openSession === 'function' ? props.openSession : undefined
       const [status, setStatus] = React.useState(null)
       const [statusError, setStatusError] = React.useState(null)
       const [sessions, setSessions] = React.useState(null)
@@ -224,6 +258,9 @@ window.__ModuleLoader__.load({
       const [address, setAddress] = React.useState('')
       const [busy, setBusy] = React.useState(null)
       const [notice, setNotice] = React.useState(null)
+      const [importingKey, setImportingKey] = React.useState(null)
+      const [targetDir, setTargetDir] = React.useState('')
+      const [importError, setImportError] = React.useState(null)
       const aliveRef = React.useRef(true)
       const revisionRef = React.useRef(-1)
       const startedRef = React.useRef(0)
@@ -335,12 +372,70 @@ window.__ModuleLoader__.load({
         void run('refresh', async () => {})
       }
 
+      const startImport = (item) => {
+        setImportingKey(item.key)
+        setTargetDir('')
+        setImportError(null)
+      }
+
+      const cancelImport = () => {
+        setImportingKey(null)
+        setTargetDir('')
+        setImportError(null)
+      }
+
+      const chooseDirectory = async () => {
+        if (pickDirectory === undefined) {
+          setImportError(tr('pickDirectoryUnavailable'))
+          return
+        }
+        try {
+          const picked = await pickDirectory()
+          if (typeof picked === 'string' && picked !== '') setTargetDir(picked)
+        } catch (error) {
+          setImportError(error instanceof Error ? error.message : String(error))
+        }
+      }
+
+      const runImport = async (item) => {
+        const directory = targetDir.trim()
+        if (directory === '') {
+          setImportError(tr('targetDirRequired'))
+          return
+        }
+        if (item.messageCount === 0) {
+          setImportError(tr('importEmpty'))
+          return
+        }
+        setBusy(`import:${item.key}`)
+        setImportError(null)
+        try {
+          const result = await api('/import', {
+            method: 'POST',
+            body: JSON.stringify({ peerId: item.peerId, sessionId: item.sessionId, targetDir: directory }),
+          })
+          const base = result.alreadyImported ? tr('importAlready') : tr('importDone')
+          setNotice({ kind: 'ok', text: result.warning ? `${base} ${result.warning}` : base })
+          setImportingKey(null)
+          setTargetDir('')
+          await loadStatus()
+          if (openSession !== undefined) openSession(result.localSessionId)
+        } catch (error) {
+          setImportError(error instanceof Error ? error.message : String(error))
+        } finally {
+          setBusy(null)
+        }
+      }
+
       const self = status?.self
       const config = status?.config
       const peers = status?.peers ?? []
       const selected = selectedShareKey === null
         ? undefined
         : shares.incoming.find(item => item.key === selectedShareKey)
+      const importedFor = item => (status?.imports ?? []).find(record => (
+        record.sourcePeerId === item.peerId && record.sourceSessionId === item.sessionId
+      ))
 
       const copyButton = (value, label) => h('button', {
         type: 'button',
@@ -513,43 +608,118 @@ window.__ModuleLoader__.load({
           ),
           shares.incoming.length === 0
             ? h('p', { className: 'ls-muted' }, tr('incomingEmpty'))
-            : h('div', { className: 'ls-list' }, shares.incoming.map(item => h('div', { key: item.key, className: 'ls-share' },
-              h('button', {
-                className: 'ls-share-row',
-                type: 'button',
-                'aria-expanded': selectedShareKey === item.key,
-                onClick: () => { setSelectedShareKey(selectedShareKey === item.key ? null : item.key) },
-              },
-              h('span', { className: 'ls-share-main' },
-                h('span', { className: 'ls-share-title' }, item.title),
-                h('span', { className: 'ls-muted' },
-                  `${tr('from')} ${item.originName} · ${item.messageCount} ${tr('messages')} · ${tr('updatedAt')} ${formatTime(item.updatedAt)}`,
-                ),
-              ),
-              h('span', { className: 'ls-button' }, tr('open')),
-              ),
-              selected !== undefined && selected.key === item.key
-                ? h('div', { className: 'ls-transcript' },
-                  h('div', { className: 'ls-transcript-head' },
-                    h('strong', null, item.title),
-                    h('button', {
+            : h('div', { className: 'ls-list' }, shares.incoming.map((item) => {
+              const importedRecord = importedFor(item)
+              const expanded = selected !== undefined && selected.key === item.key
+              const importOpen = importingKey === item.key
+              const importing = busy === `import:${item.key}`
+              return h('div', { key: item.key, className: 'ls-share' },
+                h('div', { className: 'ls-share-row' },
+                  h('button', {
+                    className: 'ls-share-main',
+                    type: 'button',
+                    'aria-expanded': expanded,
+                    onClick: () => { setSelectedShareKey(expanded ? null : item.key) },
+                  },
+                  h('span', { className: 'ls-share-title' }, item.title),
+                  h('span', { className: 'ls-muted' },
+                    `${tr('from')} ${item.originName} · ${item.messageCount} ${tr('messages')} · ${tr('updatedAt')} ${formatTime(item.updatedAt)}`,
+                  ),
+                  ),
+                  importedRecord === undefined
+                    ? null
+                    : h('span', { className: 'ls-badge ls-badge-ok' }, tr('importedBadge')),
+                  importedRecord === undefined || openSession === undefined
+                    ? null
+                    : h('button', {
                       className: 'ls-button',
                       type: 'button',
-                      onClick: () => { setSelectedShareKey(null) },
-                    }, tr('close')),
-                  ),
-                  h('p', { className: 'ls-muted' },
-                    `${tr('from')} ${item.originName} (${item.peerId}) · ${tr('receivedAt')} ${formatTime(item.receivedAt)}`,
-                  ),
-                  Array.isArray(item.messages) && item.messages.length > 0
-                    ? item.messages.map((message, index) => h('div', { className: 'ls-message', key: index },
-                      h('div', { className: 'ls-role' }, roleLabel(message.role, tr)),
-                      h('div', { className: 'ls-message-text' }, message.text),
-                    ))
-                    : h('p', { className: 'ls-muted' }, tr('noMessages')),
-                )
-                : null,
-            ))),
+                      onClick: () => { openSession(importedRecord.localSessionId) },
+                    }, tr('open')),
+                  h('button', {
+                    className: 'ls-button',
+                    type: 'button',
+                    'aria-expanded': expanded,
+                    onClick: () => { setSelectedShareKey(expanded ? null : item.key) },
+                  }, expanded ? tr('close') : tr('open')),
+                  importedRecord !== undefined || item.messageCount === 0
+                    ? null
+                    : h('button', {
+                      className: 'ls-button ls-button-primary',
+                      type: 'button',
+                      onClick: () => { startImport(item) },
+                    }, tr('importAction')),
+                ),
+                expanded
+                  ? h('div', { className: 'ls-transcript' },
+                    h('div', { className: 'ls-transcript-head' },
+                      h('strong', null, item.title),
+                      h('button', {
+                        className: 'ls-button',
+                        type: 'button',
+                        onClick: () => { setSelectedShareKey(null) },
+                      }, tr('close')),
+                    ),
+                    h('p', { className: 'ls-muted' },
+                      `${tr('from')} ${item.originName} (${item.peerId}) · ${tr('receivedAt')} ${formatTime(item.receivedAt)}`,
+                    ),
+                    Array.isArray(item.messages) && item.messages.length > 0
+                      ? item.messages.map((message, index) => h('div', { className: 'ls-message', key: index },
+                        h('div', { className: 'ls-role' }, roleLabel(message.role, tr)),
+                        h('div', { className: 'ls-message-text' }, message.text),
+                      ))
+                      : h('p', { className: 'ls-muted' }, tr('noMessages')),
+                  )
+                  : null,
+                importOpen
+                  ? h('div', { className: 'ls-import' },
+                    h('p', { className: 'ls-muted' }, tr('importHint')),
+                    item.sourceCwd
+                      ? h('div', { className: 'ls-kv' },
+                        h('span', { className: 'ls-key' }, tr('sourceCwd')),
+                        h('code', { className: 'ls-code' }, item.sourceCwd),
+                      )
+                      : h('p', { className: 'ls-muted' }, tr('sourceCwdMissing')),
+                    h('div', { className: 'ls-kv' },
+                      h('span', { className: 'ls-key' }, tr('targetDir')),
+                      h('div', { className: 'ls-value' },
+                        h('input', {
+                          className: 'ls-input',
+                          value: targetDir,
+                          onChange: event => { setTargetDir(event.target.value) },
+                          placeholder: tr('targetDirPlaceholder'),
+                          'aria-label': tr('targetDir'),
+                          autoComplete: 'off',
+                          spellCheck: false,
+                          disabled: importing,
+                        }),
+                        h('button', {
+                          className: 'ls-button',
+                          type: 'button',
+                          disabled: importing,
+                          onClick: () => { void chooseDirectory() },
+                        }, tr('chooseDirectory')),
+                      ),
+                    ),
+                    importError === null ? null : h('p', { className: 'ls-error', role: 'alert' }, importError),
+                    h('div', { className: 'ls-form' },
+                      h('button', {
+                        className: 'ls-button ls-button-primary',
+                        type: 'button',
+                        disabled: importing || targetDir.trim() === '',
+                        onClick: () => { void runImport(item) },
+                      }, importing ? tr('importing') : tr('startImport')),
+                      h('button', {
+                        className: 'ls-button',
+                        type: 'button',
+                        disabled: importing,
+                        onClick: cancelImport,
+                      }, tr('cancel')),
+                    ),
+                  )
+                  : null,
+              )
+            })),
         ),
 
         h('p', { className: 'ls-phase' }, tr('phaseNote')),
@@ -593,8 +763,11 @@ window.__ModuleLoader__.load({
 .ls-peer-name, .ls-session-title { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:13px; font-weight:600; word-break:break-word; }
 .ls-share { border-top:0.5px solid var(--dsw-alias-border-l1); }
 .ls-share:first-child { border-top:0; }
-.ls-share-row { display:flex; width:100%; align-items:center; gap:10px; padding:10px 0; border:0; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
-.ls-share-main { display:flex; flex:1; min-width:0; flex-direction:column; gap:4px; }
+.ls-share-row { display:flex; width:100%; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 0; }
+.ls-share-main { display:flex; flex:1; min-width:min(240px, 100%); flex-direction:column; gap:4px; padding:0; border:0; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.ls-import { display:flex; flex-direction:column; gap:10px; margin:4px 0 12px; padding:12px; border:0.5px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-2); }
+.ls-import .ls-key { width:110px; }
+.ls-import .ls-kv { align-items:center; }
 .ls-share-title { font-size:13px; font-weight:600; word-break:break-word; }
 .ls-transcript { display:flex; flex-direction:column; gap:10px; max-height:420px; margin-bottom:12px; padding:12px; overflow:auto; border:0.5px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-2); }
 .ls-transcript-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -611,12 +784,22 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'localshare: dictionaries')
+        const uiWorkspace = ctx.get('uiWorkspace')
+        const clientServices = {
+          pickDirectory: uiWorkspace !== undefined && typeof uiWorkspace.pickDirectory === 'function'
+            ? () => uiWorkspace.pickDirectory()
+            : undefined,
+          openSession: uiWorkspace !== undefined && typeof uiWorkspace.openSession === 'function'
+            ? sessionId => uiWorkspace.openSession(sessionId)
+            : undefined,
+        }
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
           id: 'localshare',
           order: 35,
           label: () => ctx.locale.bind(NS)('nav'),
           locale: NS,
+          inject: () => clientServices,
         }, LocalShareSection))
       },
     }
