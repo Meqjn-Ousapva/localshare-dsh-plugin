@@ -19,6 +19,20 @@ function fakePersistence() {
       const header = created.find(value => value.id === id)
       return header === undefined ? undefined : { header }
     },
+    async open(id) {
+      const header = created.find(value => value.id === id)
+      if (header === undefined) {
+        const error = new Error(`session ${id} not found`)
+        error.name = 'SessionPersistenceNotFoundError'
+        throw error
+      }
+      return {
+        id,
+        header,
+        async read() { return { events: [], eventState: 'detached' } },
+        async close() {},
+      }
+    },
     async create(header) {
       created.push(header)
       return {

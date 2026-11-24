@@ -89,7 +89,7 @@ config:
 
 导入只恢复**对话文本**，不会复制对方工作目录中的文件，也不包含原会话的工具调用/工具结果/推理过程；导入后可以继续对话，但模型看不到原来的工具过程。导入表单里的**权限预设**会写入会话的 `permission/preset`、`sandbox/mode`、`approval/policy` 事件；如果不想每次工具调用都点“给权限”，选择标记“不再询问”的预设（例如 `danger-full-access`）。这会放宽导入会话的工具权限，只对可信对话/工作区使用。
 
-0.1.4 起，插件会探测当前主机是否能执行 `read-only` / `workspace-write`：没有可用 sandbox 后端时，这两类预设会被禁用，默认改用 `danger-full-access`，Host 也会在写入前拒绝不可用的预设。0.1.5 修复了没有人类用户消息的共享（assistant-only）的标题事件：这类导入会写成一个空引用列表的 user 标题，避免重启校验时被判为损坏并归档。若希望保留 confinement，需要安装可用的后端（Linux 的 bubblewrap 或 Landlock 内核、macOS 的 sandbox-exec、Windows 的 ACL restricted-token runner）。导入前会显示对方的原始工作目录，但它只作为参考，本机 cwd 由你选择。导入记录保存在 `~/.dsh/localshare/imports.json`，同一来源会话重复导入会直接打开已有会话。
+0.1.4 起，插件会探测当前主机是否能执行 `read-only` / `workspace-write`：没有可用 sandbox 后端时，这两类预设会被禁用，默认改用 `danger-full-access`，Host 也会在写入前拒绝不可用的预设。0.1.5 修复了没有人类用户消息的共享（assistant-only）的标题事件：这类导入会写成一个空引用列表的 user 标题，避免重启校验时被判为损坏并归档。0.1.6 起，导入写入后会立即通过持久化后端完整回读校验；如果日志不合法，导入会当场报错，而不是先显示、重启后才消失。若希望保留 confinement，需要安装可用的后端（Linux 的 bubblewrap 或 Landlock 内核、macOS 的 sandbox-exec、Windows 的 ACL restricted-token runner）。导入前会显示对方的原始工作目录，但它只作为参考，本机 cwd 由你选择。导入记录保存在 `~/.dsh/localshare/imports.json`，同一来源会话重复导入会直接打开已有会话。
 
 导入成功后会把新会话挂到所选工作区；侧栏显示的是工作区的会话账本，仅写入持久化存储并不会自动出现在侧栏。0.1.1 起会在导入后调用 `Workspace.attachSession`，并在插件启动时自动修复旧版本已导入但未挂接的会话。
 
