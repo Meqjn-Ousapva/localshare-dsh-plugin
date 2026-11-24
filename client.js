@@ -43,6 +43,8 @@ window.__ModuleLoader__.load({
       permissionNever: 'no prompts',
       permissionHint: 'Choose the imported session\'s permission preset. A preset marked “no prompts” grants tool access without per-call approval; choose it deliberately.',
       permissionUnavailable: 'No permission presets are available; the imported session keeps the local default.',
+      permissionUnusable: 'unavailable on this host',
+      permissionSandboxUnavailable: 'This host has no usable sandbox backend; presets that require read-only/workspace-write are disabled. Use a danger-full-access preset.',
       importDone: 'Conversation imported. Opening the local session...',
       importAlready: 'This conversation was already imported; opening it.',
       importEmpty: 'This share has no visible messages to import.',
@@ -127,6 +129,8 @@ window.__ModuleLoader__.load({
       permissionNever: '不再询问',
       permissionHint: '选择导入会话的权限预设。标记“不再询问”的预设会让工具调用跳过逐次审批，请谨慎选择。',
       permissionUnavailable: '当前没有可用的权限预设，导入会话将使用本机默认设置。',
+      permissionUnusable: '当前主机不可用',
+      permissionSandboxUnavailable: '当前主机没有可用的 sandbox 后端，需要 read-only/workspace-write 的预设已禁用；请选择 danger-full-access 预设。',
       importDone: '会话已导入，正在打开本机会话…',
       importAlready: '这条共享已经导入过，正在打开。',
       importEmpty: '这条共享没有可导入的可见消息。',
@@ -322,13 +326,14 @@ window.__ModuleLoader__.load({
           const data = await api('/permission-presets')
           if (!aliveRef.current) return
           const options = Array.isArray(data.options) ? data.options : []
+          const usable = options.filter(option => option.usable !== false)
           setPermissionOptions(options)
           setPermissionPreset(current => {
-            if (current !== '' && options.some(option => option.value === current)) return current
-            if (typeof data.defaultPreset === 'string' && options.some(option => option.value === data.defaultPreset)) {
+            if (current !== '' && usable.some(option => option.value === current)) return current
+            if (typeof data.defaultPreset === 'string' && usable.some(option => option.value === data.defaultPreset)) {
               return data.defaultPreset
             }
-            return options[0]?.value ?? ''
+            return usable[0]?.value ?? ''
           })
         } catch {
           // The import still works without a preset; the session keeps the local default.
@@ -472,6 +477,8 @@ window.__ModuleLoader__.load({
       const importedFor = item => (status?.imports ?? []).find(record => (
         record.sourcePeerId === item.peerId && record.sourceSessionId === item.sessionId
       ))
+      const usablePermissionOptions = permissionOptions.filter(option => option.usable !== false)
+      const hasUnusablePermissionOptions = permissionOptions.some(option => option.usable === false)
 
       const copyButton = (value, label) => h('button', {
         type: 'button',
@@ -740,7 +747,7 @@ window.__ModuleLoader__.load({
                         }, tr('chooseDirectory')),
                       ),
                     ),
-                    permissionOptions.length > 0
+                    usablePermissionOptions.length > 0
                       ? h(React.Fragment, null,
                         h('div', { className: 'ls-kv' },
                           h('span', { className: 'ls-key' }, tr('permissionPreset')),
@@ -751,14 +758,19 @@ window.__ModuleLoader__.load({
                               disabled: importing,
                               onChange: event => { setPermissionPreset(event.target.value) },
                               'aria-label': tr('permissionPreset'),
-                            }, permissionOptions.map(option => h('option', { key: option.value, value: option.value },
-                              `${option.name}${option.approval === 'never'
-                                ? ` · ${tr('permissionNever')}`
-                                : option.approval === 'ask' ? ` · ${tr('permissionAsk')}` : ''}`,
+                            }, permissionOptions.map(option => h('option', {
+                              key: option.value,
+                              value: option.value,
+                              disabled: option.usable === false,
+                            },
+                            `${option.name}${option.approval === 'never'
+                              ? ` · ${tr('permissionNever')}`
+                              : option.approval === 'ask' ? ` · ${tr('permissionAsk')}` : ''}${option.usable === false ? ` · ${tr('permissionUnusable')}` : ''}`,
                             ))),
                           ),
                         ),
                         h('p', { className: 'ls-muted' }, tr('permissionHint')),
+                        hasUnusablePermissionOptions ? h('p', { className: 'ls-warn' }, tr('permissionSandboxUnavailable')) : null,
                       )
                       : h('p', { className: 'ls-muted' }, tr('permissionUnavailable')),
                     importError === null ? null : h('p', { className: 'ls-error', role: 'alert' }, importError),

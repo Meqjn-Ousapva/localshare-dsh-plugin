@@ -283,6 +283,24 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   assert.equal(presets.ok, true)
   assert.equal(presets.defaultPreset, 'workspace-write')
   assert.equal(presets.options.length, 2)
+  assert.equal(presets.options.find(option => option.value === 'danger-full-access').usable, true)
+  assert.equal(presets.options.find(option => option.value === 'workspace-write').usable, false)
+
+  await peer.publishShare({
+    sessionId: 'session-sandbox',
+    title: 'Sandbox host check',
+    messages: [{ role: 'user', text: 'no sandbox backend here' }],
+  })
+  await assert.rejects(
+    () => tool.execute({
+      action: 'import_share',
+      peerId: BETA,
+      sessionId: 'session-sandbox',
+      targetDir: directory,
+      permissionPreset: 'workspace-write',
+    }),
+    error => error.code === 'import/sandbox',
+  )
 
   const importedStatus = await callRoute('/api/localshare/status')
   assert.equal(importedStatus.json.imports.length, 1)

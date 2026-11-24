@@ -13,7 +13,7 @@ import { buildShareFromQuery, listShareableSessions, shareMeta } from './lib/sha
 import { attachImportRecords, importShareToSession, inspectStoredSession } from './lib/import.js'
 import { loadImports, saveImports } from './lib/imports.js'
 
-const VERSION = '0.1.3'
+const VERSION = '0.1.4'
 const UI_PREFIX = '/api/localshare'
 const UI_BODY_BYTES = 64 * 1024
 const REBUILD_DELAY_MS = 700
@@ -181,7 +181,31 @@ export async function apply(ctx, config = {}) {
     }
   }
 
-  const listPermissionPresets = () => {
+  const sandboxProbes = new Map()
+  /** @param {string} mode */
+  const sandboxModeUsable = (mode) => {
+    if (mode === 'danger-full-access') return Promise.resolve(true)
+    if (!sandboxProbes.has(mode)) {
+      sandboxProbes.set(mode, (async () => {
+        const sandbox = ctx.get('sandbox')
+        if (sandbox === undefined) return false
+        const policy = ctx.get('sandboxPolicy')
+        const workspaceRoot = typeof policy?.workspaceRoot === 'string' && path.isAbsolute(policy.workspaceRoot)
+          ? policy.workspaceRoot
+          : process.cwd()
+        try {
+          await sandbox.confine([process.execPath, '--version'], { mode, workspaceRoot })
+          return true
+        } catch (error) {
+          return !(error?.code === 'SANDBOX_UNAVAILABLE'
+            || /no sandbox backend is usable/i.test(error instanceof Error ? error.message : String(error)))
+        }
+      })())
+    }
+    return sandboxProbes.get(mode)
+  }
+
+  const listPermissionPresets = async () => {
     const service = ctx.get('permissionPresets')
     if (service === undefined) return { ok: true, options: [], defaultPreset: null }
     const catalog = service.catalog()
@@ -190,7 +214,12 @@ export async function apply(ctx, config = {}) {
       if (option.value === 'custom') continue
       try {
         const spec = service.resolve(option.value)
-        options.push({ ...option, sandbox: spec.sandbox, approval: spec.approval })
+        options.push({
+          ...option,
+          sandbox: spec.sandbox,
+          approval: spec.approval,
+          usable: await sandboxModeUsable(spec.sandbox),
+        })
       } catch {
         // An option that cannot resolve right now is not offerable for import.
       }
@@ -243,6 +272,29 @@ export async function apply(ctx, config = {}) {
       importRecords = importRecords.filter(record => record !== existing)
     }
     const permission = resolvePermissionPreset(ctx, permissionPreset)
+    if (permission !== undefined && !await sandboxModeUsable(permission.sandbox)) {
+      throw new LocalShareError(
+        'import/sandbox',
+        `当前主机无法使用 sandbox 模式 "${permission.sandbox}"；请选择 danger-full-access 预设，或先安装可用的 sandbox 后端。`,
+      )
+    }
+    if (permission === undefined) {
+      const service = ctx.get('permissionPresets')
+      const defaultPreset = service?.catalog().defaultPreset
+      if (typeof defaultPreset === 'string' && defaultPreset !== '') {
+        try {
+          const spec = service.resolve(defaultPreset)
+          if (!await sandboxModeUsable(spec.sandbox)) {
+            throw new LocalShareError(
+              'import/sandbox',
+              `本机默认预设 "${defaultPreset}" 需要不可用的 sandbox；请在导入时选择 danger-full-access 预设。`,
+            )
+          }
+        } catch (error) {
+          if (error instanceof LocalShareError) throw error
+        }
+      }
+    }
     const result = await importShareToSession({
       share: item.share,
       targetDir,
@@ -373,7 +425,7 @@ export async function apply(ctx, config = {}) {
         return
       }
       if (req.method === 'GET' && sub === '/permission-presets') {
-        sendJson(res, 200, listPermissionPresets())
+        sendJson(res, 200, await listPermissionPresets())
         return
       }
       if (req.method === 'POST' && sub === '/peers') {
@@ -485,7 +537,7 @@ export async function apply(ctx, config = {}) {
         case 'list_shares':
           return { ok: true, ...node.snapshot().shares }
         case 'list_permission_presets':
-          return listPermissionPresets()
+          return await listPermissionPresets()
         case 'import_share':
           return {
             ok: true,
