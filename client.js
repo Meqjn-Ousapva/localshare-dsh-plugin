@@ -25,8 +25,8 @@ window.__ModuleLoader__.load({
       copied: 'Copied',
       copyFailed: 'Copy failed; select the text manually',
       open: 'View',
-      importAction: 'Import',
-      importHint: 'Choose an existing local directory. This creates a new local conversation; no files are copied from the peer.',
+      importAction: 'Fork copy',
+      importHint: 'This forks a one-time local copy. Later updates to the source share do not sync into it, and no files are copied from the peer.',
       sourceCwd: 'Source working directory',
       sourceCwdMissing: 'The source did not provide a working directory.',
       targetDir: 'Local directory',
@@ -37,7 +37,9 @@ window.__ModuleLoader__.load({
       startImport: 'Import conversation',
       importing: 'Importing...',
       cancel: 'Cancel',
-      importedBadge: 'Imported',
+      importedBadge: 'Forked',
+      forkAgain: 'Fork again',
+      forkAgainHint: 'This creates another independent copy; the existing copy stays unchanged.',
       permissionPreset: 'Permission preset',
       permissionAsk: 'asks each time',
       permissionNever: 'no prompts',
@@ -45,7 +47,7 @@ window.__ModuleLoader__.load({
       permissionUnavailable: 'No permission presets are available; the imported session keeps the local default.',
       permissionUnusable: 'unavailable on this host',
       permissionSandboxUnavailable: 'This host has no usable sandbox backend; presets that require read-only/workspace-write are disabled. Use a danger-full-access preset.',
-      importDone: 'Conversation imported. Opening the local session...',
+      importDone: 'Forked a local copy. Opening the local session...',
       importAlready: 'This conversation was already imported; opening it.',
       importEmpty: 'This share has no visible messages to import.',
       noAddresses: 'No non-loopback IPv4 address was found. Check the network interface or set advertise in the plugin config.',
@@ -111,8 +113,8 @@ window.__ModuleLoader__.load({
       copied: '已复制',
       copyFailed: '复制失败，请手动选择文本',
       open: '查看',
-      importAction: '导入',
-      importHint: '选择一个已有的本机目录。导入会创建一条新的本机会话，不会复制对方文件。',
+      importAction: 'Fork 副本',
+      importHint: '导入会 fork 一份独立的本机副本；来源共享之后的更新不会同步进来，也不会复制对方文件。',
       sourceCwd: '来源工作目录',
       sourceCwdMissing: '来源没有提供工作目录。',
       targetDir: '本机目录',
@@ -123,7 +125,9 @@ window.__ModuleLoader__.load({
       startImport: '导入会话',
       importing: '导入中…',
       cancel: '取消',
-      importedBadge: '已导入',
+      importedBadge: '已 Fork',
+      forkAgain: '再次 Fork',
+      forkAgainHint: '这会再 fork 一份独立副本，已有副本保持不变。',
       permissionPreset: '权限预设',
       permissionAsk: '逐次询问',
       permissionNever: '不再询问',
@@ -131,7 +135,7 @@ window.__ModuleLoader__.load({
       permissionUnavailable: '当前没有可用的权限预设，导入会话将使用本机默认设置。',
       permissionUnusable: '当前主机不可用',
       permissionSandboxUnavailable: '当前主机没有可用的 sandbox 后端，需要 read-only/workspace-write 的预设已禁用；请选择 danger-full-access 预设。',
-      importDone: '会话已导入，正在打开本机会话…',
+      importDone: '已 Fork 一份本地副本，正在打开…',
       importAlready: '这条共享已经导入过，正在打开。',
       importEmpty: '这条共享没有可导入的可见消息。',
       noAddresses: '没有找到非回环 IPv4 地址。请检查网络接口，或在插件配置中设置 advertise。',
@@ -277,6 +281,7 @@ window.__ModuleLoader__.load({
       const [importError, setImportError] = React.useState(null)
       const [permissionOptions, setPermissionOptions] = React.useState([])
       const [permissionPreset, setPermissionPreset] = React.useState('')
+      const [importForceNew, setImportForceNew] = React.useState(false)
       const aliveRef = React.useRef(true)
       const revisionRef = React.useRef(-1)
       const startedRef = React.useRef(0)
@@ -408,16 +413,18 @@ window.__ModuleLoader__.load({
         void run('refresh', async () => {})
       }
 
-      const startImport = (item) => {
+      const startImport = (item, forceNew = false) => {
         setImportingKey(item.key)
         setTargetDir('')
         setImportError(null)
+        setImportForceNew(forceNew)
       }
 
       const cancelImport = () => {
         setImportingKey(null)
         setTargetDir('')
         setImportError(null)
+        setImportForceNew(false)
       }
 
       const chooseDirectory = async () => {
@@ -453,12 +460,14 @@ window.__ModuleLoader__.load({
               sessionId: item.sessionId,
               targetDir: directory,
               ...(permissionPreset === '' ? {} : { permissionPreset }),
+              forceNew: importForceNew,
             }),
           })
           const base = result.alreadyImported ? tr('importAlready') : tr('importDone')
           setNotice({ kind: 'ok', text: result.warning ? `${base} ${result.warning}` : base })
           setImportingKey(null)
           setTargetDir('')
+          setImportForceNew(false)
           await loadStatus()
           if (openSession !== undefined) openSession(result.localSessionId)
         } catch (error) {
@@ -688,13 +697,13 @@ window.__ModuleLoader__.load({
                     'aria-expanded': expanded,
                     onClick: () => { setSelectedShareKey(expanded ? null : item.key) },
                   }, expanded ? tr('close') : tr('open')),
-                  importedRecord !== undefined || item.messageCount === 0
+                  item.messageCount === 0
                     ? null
                     : h('button', {
                       className: 'ls-button ls-button-primary',
                       type: 'button',
-                      onClick: () => { startImport(item) },
-                    }, tr('importAction')),
+                      onClick: () => { startImport(item, importedRecord !== undefined) },
+                    }, importedRecord === undefined ? tr('importAction') : tr('forkAgain')),
                 ),
                 expanded
                   ? h('div', { className: 'ls-transcript' },
@@ -720,6 +729,7 @@ window.__ModuleLoader__.load({
                 importOpen
                   ? h('div', { className: 'ls-import' },
                     h('p', { className: 'ls-muted' }, tr('importHint')),
+                    importForceNew ? h('p', { className: 'ls-warn' }, tr('forkAgainHint')) : null,
                     item.sourceCwd
                       ? h('div', { className: 'ls-kv' },
                         h('span', { className: 'ls-key' }, tr('sourceCwd')),

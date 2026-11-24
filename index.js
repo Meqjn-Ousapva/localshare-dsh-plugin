@@ -13,7 +13,7 @@ import { buildShareFromQuery, listShareableSessions, shareMeta } from './lib/sha
 import { attachImportRecords, importShareToSession, inspectStoredSession } from './lib/import.js'
 import { loadImports, saveImports } from './lib/imports.js'
 
-const VERSION = '0.1.6'
+const VERSION = '0.1.7'
 const UI_PREFIX = '/api/localshare'
 const UI_BODY_BYTES = 64 * 1024
 const REBUILD_DELAY_MS = 700
@@ -227,13 +227,15 @@ export async function apply(ctx, config = {}) {
     return { ok: true, options, defaultPreset: catalog.defaultPreset }
   }
 
-  const importIncomingShare = async (peerId, sessionId, targetDir, permissionPreset) => {
+  const importIncomingShare = async (peerId, sessionId, targetDir, permissionPreset, forceNew = false) => {
     const item = node.incoming.get(`${peerId}:${sessionId}`)
     if (item === undefined) {
       throw new LocalShareError('import/not-found', '没有找到这条共享，可能已被对方撤回', 404)
     }
     const persistence = ctx.get('sessionPersistence')
-    const existing = importRecords.find(record => record.sourcePeerId === peerId && record.sourceSessionId === sessionId)
+    const existing = forceNew
+      ? undefined
+      : importRecords.find(record => record.sourcePeerId === peerId && record.sourceSessionId === sessionId)
     if (existing !== undefined) {
       if (persistence !== undefined) {
         const inspection = await inspectStoredSession(persistence, existing.localSessionId)
@@ -459,6 +461,7 @@ export async function apply(ctx, config = {}) {
           requireString(body.sessionId, 'sessionId'),
           requireString(body.targetDir, 'targetDir'),
           typeof body.permissionPreset === 'string' ? body.permissionPreset : undefined,
+          body.forceNew === true,
         )
         sendJson(res, 200, { ok: true, ...result })
         return
@@ -486,9 +489,10 @@ export async function apply(ctx, config = {}) {
     name: 'localshare',
     description: 'Discover LocalShare peers on other DSH machines by explicit host:port and share read-only conversation transcripts. '
       + 'Actions: status, list_peers, add_peer (address), remove_peer (peerId), list_sessions, share_session (sessionId), '
-      + 'unshare_session (sessionId), list_shares (metadata only), import_share (peerId, sessionId, targetDir, permissionPreset). '
+      + 'unshare_session (sessionId), list_shares (metadata only), import_share (peerId, sessionId, targetDir, permissionPreset, forceNew). '
       + 'import_share creates a new local Session from a received share in an existing local directory; it copies no peer files. '
       + 'permissionPreset is optional and must come from localshare list_permission_presets; ask the user before choosing a preset whose approval is never. '
+      + 'Import is a one-way fork: set forceNew true to create another independent copy, otherwise an existing copy for the same source is opened. '
       + 'Ask the user which local directory to use before importing. Discovery is manual in this phase; the peer must also run LocalShare.',
     parameters: {
       type: 'object',
@@ -503,6 +507,7 @@ export async function apply(ctx, config = {}) {
         sessionId: { type: 'string', description: 'Conversation identity for share_session, unshare_session, or import_share.' },
         targetDir: { type: 'string', description: 'Existing absolute local directory for import_share; ask the user to choose it.' },
         permissionPreset: { type: 'string', description: 'Optional local permission preset for import_share; list_permission_presets returns the available values.' },
+        forceNew: { type: 'boolean', description: 'Create another independent copy even if this source was imported before.' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -546,6 +551,7 @@ export async function apply(ctx, config = {}) {
               requireString(args.sessionId, 'sessionId'),
               requireString(args.targetDir, 'targetDir'),
               typeof args.permissionPreset === 'string' ? args.permissionPreset : undefined,
+              args.forceNew === true,
             ),
           }
         default:

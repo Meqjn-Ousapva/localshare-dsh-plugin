@@ -308,6 +308,19 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   assert.equal(importedStatus.json.imports[0].sourceSessionId, 'session-import')
   assert.equal(importedStatus.json.imports[0].sourceCwd, '/remote/project')
 
+  // Import is a one-way fork: later source updates must not rewrite the
+  // already-imported local copy or create another session.
+  const importedEventsBefore = appendedEvents
+  await peer.publishShare({
+    sessionId: 'session-import',
+    title: 'From Beta updated',
+    sourceCwd: '/remote/project',
+    messages: [
+      { role: 'user', text: 'remote hello' },
+      { role: 'assistant', text: 'remote reply' },
+      { role: 'user', text: 'later source message' },
+    ],
+  })
   const again = await tool.execute({
     action: 'import_share',
     peerId: BETA,
@@ -318,6 +331,8 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   assert.equal(again.alreadyImported, true)
   assert.equal(createdSessions.length, 1)
   assert.equal(again.localSessionId, imported.localSessionId)
+  assert.equal(appendedEvents, importedEventsBefore)
+  assert.equal(appendedEvents.filter(event => event.type === 'user/message' || event.type === 'assistant/message').length, 2)
 
   // A log written by the old importer fails replay; the next import detaches
   // it, drops the provenance record, and creates a fresh valid session.
@@ -335,6 +350,25 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   assert.deepEqual(workspaceDetached, [imported.localSessionId])
   assert.deepEqual(workspaceArchived, [imported.localSessionId])
   assert.deepEqual(workspaceAttached, [imported.localSessionId, repaired.localSessionId])
+
+  // An explicit fork-again import creates a second independent copy even
+  // though the source already has one.
+  const forkedAgain = await tool.execute({
+    action: 'import_share',
+    peerId: BETA,
+    sessionId: 'session-import',
+    targetDir: directory,
+    permissionPreset: 'danger-full-access',
+    forceNew: true,
+  })
+  assert.equal(forkedAgain.alreadyImported, false)
+  assert.notEqual(forkedAgain.localSessionId, repaired.localSessionId)
+  assert.equal(createdSessions.length, 3)
+  assert.deepEqual(workspaceAttached, [
+    imported.localSessionId,
+    repaired.localSessionId,
+    forkedAgain.localSessionId,
+  ])
 
   const unshared = await tool.execute({ action: 'unshare_session', sessionId: 'session-1' })
   assert.equal(unshared.removed, true)
