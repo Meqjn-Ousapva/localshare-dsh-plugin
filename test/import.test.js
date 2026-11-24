@@ -84,6 +84,13 @@ test('import builder creates a closed, unseeded transcript with a title', () => 
   assert.equal(built.events.at(-1).type, 'session/title')
   assert.equal(built.events.at(-1).data.title, 'Remote design chat')
   assert.deepEqual(built.events.at(-1).data.source, { kind: 'fallback' })
+  const surfaceTypes = built.events
+    .filter(event => event.surfaceOp !== undefined)
+    .map(event => event.type)
+  // Surface node 0 must be the protected empty system head: the stored format
+  // permits a later system/message only as a replacement over that head.
+  assert.equal(surfaceTypes[0], 'system/message')
+  assert.ok(surfaceTypes.indexOf('system/message') < surfaceTypes.indexOf('user/message'))
   const steps = built.events
     .filter(event => event.type === 'step/start' || event.type === 'step/end')
     .map(event => event.data.step)
@@ -101,6 +108,44 @@ test('import builder creates a closed, unseeded transcript with a title', () => 
     built.events.filter(event => event.type === 'turn/end').every(event => event.data.reason.kind === 'completed'),
     true,
   )
+})
+
+test('import builder seeds one empty protected system head in the first step', () => {
+  const built = buildImportedSessionEvents({
+    title: 'Head check',
+    messages: [
+      { role: 'user', text: 'hello', time: 1000 },
+      { role: 'assistant', text: 'hi', time: 2000 },
+    ],
+  }, { cwd: '/tmp/local-work' })
+
+  const heads = built.events.filter(event => event.type === 'system/message')
+  assert.equal(heads.length, 1)
+  const head = heads[0]
+  assert.equal(head.surfaceOp, 'append')
+  assert.deepEqual(head.data.turn, 1)
+  assert.deepEqual(head.data.step, 1)
+  assert.equal(head.data.message.role, 'system')
+  assert.deepEqual(head.data.message.content, [])
+  assert.deepEqual(head.data.message.source, { kind: 'system-prompt' })
+  // The head opens the surface and the first turn before any imported text.
+  const openStep = built.events.findIndex(event => event.type === 'step/start')
+  assert.equal(openStep, head.seq - 1)
+  assert.ok(head.seq < built.events.find(event => event.type === 'user/message').seq)
+})
+
+test('assistant-only imports also seed the protected system head first', () => {
+  const built = buildImportedSessionEvents({
+    title: 'Assistant first',
+    messages: [
+      { role: 'assistant', text: 'opening line', time: 1000 },
+      { role: 'user', text: 'reply', time: 2000 },
+    ],
+  }, { cwd: '/tmp/local-work' })
+
+  const surface = built.events.filter(event => event.surfaceOp !== undefined)
+  assert.deepEqual(surface.map(event => event.type), ['system/message', 'assistant/message', 'user/message'])
+  assert.deepEqual(surface[0].data.message.content, [])
 })
 
 test('import builder writes the chosen permission preset knobs', () => {

@@ -1,6 +1,6 @@
 {
   "name": "@local/localshare",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "type": "module",
   "description": "Manual peer discovery, read-only conversation sharing, and local conversation import between DeepSeek Harness machines.",

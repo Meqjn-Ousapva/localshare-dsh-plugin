@@ -13,7 +13,7 @@ import { buildShareFromQuery, listShareableSessions, shareMeta } from './lib/sha
 import { attachImportRecords, importShareToSession, inspectStoredSession } from './lib/import.js'
 import { loadImports, saveImports } from './lib/imports.js'
 
-const VERSION = '0.1.7'
+const VERSION = '0.1.8'
 const UI_PREFIX = '/api/localshare'
 const UI_BODY_BYTES = 64 * 1024
 const REBUILD_DELAY_MS = 700
