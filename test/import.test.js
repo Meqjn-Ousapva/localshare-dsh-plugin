@@ -108,6 +108,20 @@ test('import builder writes the chosen permission preset knobs', () => {
   assert.deepEqual(built.events.at(-1).data.messageSeqs, [firstUser.seq])
 })
 
+test('assistant-only import uses an empty-citation user title', () => {
+  const built = buildImportedSessionEvents({
+    title: 'Assistant only',
+    messages: [{ role: 'assistant', text: 'no human message here' }],
+  }, { cwd: '/tmp/local-work' })
+  const title = built.events.at(-1)
+  assert.equal(title.type, 'session/title')
+  assert.deepEqual(title.data, {
+    title: 'Assistant only',
+    messageSeqs: [],
+    source: { kind: 'user' },
+  })
+})
+
 test('import builder rejects a share with no visible messages', () => {
   assert.throws(
     () => buildImportedSessionEvents({ title: 'Empty', messages: [] }, { cwd: '/tmp' }),
