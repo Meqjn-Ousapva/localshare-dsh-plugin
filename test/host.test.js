@@ -80,16 +80,23 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
     },
   }
   const workspaceCalls = []
+  const workspaceAttached = []
   const workspaceRegistry = {
     async create(directory, title) {
       workspaceCalls.push({ directory, title })
-      return { id: 'ws-test', path: directory, title }
+      return {
+        id: 'ws-test',
+        path: directory,
+        title,
+        async attachSession(sessionId) { workspaceAttached.push(sessionId) },
+      }
     },
   }
   const ctx = {
     sessionPersistence,
     workspaceRegistry,
     get(name) { return this[name] },
+    inject(_deps, callback) { return callback(this) },
     effect(callback) {
       const disposer = callback()
       if (typeof disposer === 'function') disposers.push(disposer)
@@ -215,6 +222,7 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   assert.equal(workspaceCalls.length, 1)
   assert.equal(workspaceCalls[0].directory, await realpath(directory))
   assert.equal(workspaceCalls[0].title, path.basename(directory))
+  assert.deepEqual(workspaceAttached, [imported.localSessionId])
 
   const importedStatus = await callRoute('/api/localshare/status')
   assert.equal(importedStatus.json.imports.length, 1)

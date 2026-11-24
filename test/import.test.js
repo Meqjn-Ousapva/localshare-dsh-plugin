@@ -34,11 +34,18 @@ function fakePersistence() {
 
 function fakeWorkspaces() {
   const calls = []
+  const attached = []
   return {
     calls,
+    attached,
     async create(directory, title) {
       calls.push({ directory, title })
-      return { id: 'ws-test', path: directory, title }
+      return {
+        id: 'ws-test',
+        path: directory,
+        title,
+        async attachSession(sessionId) { attached.push(sessionId) },
+      }
     },
   }
 }
@@ -119,6 +126,7 @@ test('import writes a durable session and registers the chosen directory', async
   assert.equal(persistence.created.length, 1)
   assert.equal(persistence.created[0].cwd, await resolveImportTarget(directory))
   assert.equal(workspaces.calls.length, 1)
+  assert.deepEqual(workspaces.attached, [result.localSessionId])
   assert.equal(persistence.appended.at(-1).type, 'session/title')
   assert.equal(persistence.appended.filter(event => event.type === 'turn/end').length, 1)
 
@@ -135,6 +143,32 @@ test('import writes a durable session and registers the chosen directory', async
     workspaceRegistry: workspaces,
   })
   assert.notEqual(second.localSessionId, result.localSessionId)
+})
+
+test('existing import records are re-attached to their workspace', async () => {
+  const attached = []
+  const persistence = {
+    async stat(id) {
+      return id === 'session-good' ? { header: { id } } : undefined
+    },
+  }
+  const workspaces = {
+    async create(directory, title) {
+      return {
+        id: 'ws-repair',
+        path: directory,
+        title,
+        async attachSession(id) { attached.push(id) },
+      }
+    },
+  }
+  const { attachImportRecords } = await import('../lib/import.js')
+  const warnings = await attachImportRecords([
+    { localSessionId: 'session-good', targetDir: '/tmp' },
+    { localSessionId: 'session-missing', targetDir: '/tmp' },
+  ], { sessionPersistence: persistence, workspaceRegistry: workspaces })
+  assert.deepEqual(warnings, [])
+  assert.deepEqual(attached, ['session-good'])
 })
 
 test('import target must be an existing absolute directory', async () => {

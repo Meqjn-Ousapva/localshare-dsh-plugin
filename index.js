@@ -10,10 +10,10 @@ import path from 'node:path'
 import { LocalShareNode, LocalShareError, DEFAULT_PORT, parseAddress, readJsonBody, sendJson } from './lib/protocol.js'
 import { loadIdentity } from './lib/identity.js'
 import { buildShareFromQuery, listShareableSessions, shareMeta } from './lib/share.js'
-import { importShareToSession } from './lib/import.js'
+import { attachImportRecords, importShareToSession } from './lib/import.js'
 import { loadImports, saveImports } from './lib/imports.js'
 
-const VERSION = '0.1.0'
+const VERSION = '0.1.1'
 const UI_PREFIX = '/api/localshare'
 const UI_BODY_BYTES = 64 * 1024
 const REBUILD_DELAY_MS = 700
@@ -93,6 +93,19 @@ export async function apply(ctx, config = {}) {
   } catch (error) {
     importsWarning = `无法读取导入记录 ${importsFile}：${error instanceof Error ? error.message : String(error)}`
   }
+  // Imported sessions written by an earlier plugin build may exist in
+  // persistence without Workspace membership. Re-attach them once the
+  // storage and workspace services are available; attach is idempotent.
+  ctx.inject(['sessionPersistence', 'workspaceRegistry'], (scope) => {
+    void attachImportRecords(importRecords, {
+      sessionPersistence: scope.sessionPersistence,
+      workspaceRegistry: scope.workspaceRegistry,
+    }).then((warnings) => {
+      const first = warnings[0]
+      if (first !== undefined) importsWarning = `无法挂接已导入会话 ${first.localSessionId}：${first.message}`
+    })
+    return () => {}
+  })
   const node = new LocalShareNode({
     identity,
     port: settings.port,
@@ -145,7 +158,17 @@ export async function apply(ctx, config = {}) {
       if (persistence !== undefined) {
         try {
           if (await persistence.stat(existing.localSessionId) !== undefined) {
-            return { ...existing, alreadyImported: true }
+            const workspaces = ctx.get('workspaceRegistry')
+            if (workspaces === undefined) return { ...existing, alreadyImported: true }
+            const warnings = await attachImportRecords([existing], {
+              sessionPersistence: persistence,
+              workspaceRegistry: workspaces,
+            })
+            return {
+              ...existing,
+              alreadyImported: true,
+              ...(warnings[0] === undefined ? {} : { warning: warnings[0].message }),
+            }
           }
         } catch {
           // Treat an unreadable provenance entry as stale and import anew.
