@@ -61,12 +61,32 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
     },
   }
   const createdSessions = []
+  const corruptedSessions = new Set()
   let appendedEvents = null
   const sessionPersistence = {
     async list() { return [] },
     async stat(id) {
       const header = createdSessions.find(value => value.id === id)
       return header === undefined ? undefined : { header }
+    },
+    async open(id) {
+      const header = createdSessions.find(value => value.id === id)
+      if (header === undefined) {
+        const error = new Error(`session ${id} not found`)
+        error.name = 'SessionPersistenceNotFoundError'
+        throw error
+      }
+      if (corruptedSessions.has(id)) {
+        const error = new Error(`stored log is corrupt: session ${id}`)
+        error.name = 'SessionPersistenceCorruptionError'
+        throw error
+      }
+      return {
+        id,
+        header,
+        async read() { return { events: [], eventState: 'detached' } },
+        async close() {},
+      }
     },
     async create(header) {
       createdSessions.push(header)
@@ -98,6 +118,9 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   }
   const workspaceCalls = []
   const workspaceAttached = []
+  const workspaceDetached = []
+  const workspaceArchived = []
+  const attachedSet = new Set()
   const workspaceRegistry = {
     async create(directory, title) {
       workspaceCalls.push({ directory, title })
@@ -105,9 +128,19 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
         id: 'ws-test',
         path: directory,
         title,
-        async attachSession(sessionId) { workspaceAttached.push(sessionId) },
+        async attachSession(sessionId) {
+          if (!attachedSet.has(sessionId)) {
+            attachedSet.add(sessionId)
+            workspaceAttached.push(sessionId)
+          }
+        },
+        async detachSession(sessionId) { workspaceDetached.push(sessionId) },
       }
     },
+    get() {
+      return { async detachSession(sessionId) { workspaceDetached.push(sessionId) } }
+    },
+    async archiveSession(sessionId) { workspaceArchived.push(sessionId) },
   }
   const ctx = {
     sessionPersistence,
@@ -262,10 +295,28 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
     peerId: BETA,
     sessionId: 'session-import',
     targetDir: directory,
+    permissionPreset: 'danger-full-access',
   })
   assert.equal(again.alreadyImported, true)
   assert.equal(createdSessions.length, 1)
   assert.equal(again.localSessionId, imported.localSessionId)
+
+  // A log written by the old importer fails replay; the next import detaches
+  // it, drops the provenance record, and creates a fresh valid session.
+  corruptedSessions.add(imported.localSessionId)
+  const repaired = await tool.execute({
+    action: 'import_share',
+    peerId: BETA,
+    sessionId: 'session-import',
+    targetDir: directory,
+    permissionPreset: 'danger-full-access',
+  })
+  assert.equal(repaired.alreadyImported, false)
+  assert.notEqual(repaired.localSessionId, imported.localSessionId)
+  assert.equal(createdSessions.length, 2)
+  assert.deepEqual(workspaceDetached, [imported.localSessionId])
+  assert.deepEqual(workspaceArchived, [imported.localSessionId])
+  assert.deepEqual(workspaceAttached, [imported.localSessionId, repaired.localSessionId])
 
   const unshared = await tool.execute({ action: 'unshare_session', sessionId: 'session-1' })
   assert.equal(unshared.removed, true)

@@ -489,6 +489,9 @@ window.__ModuleLoader__.load({
           role: 'status',
         }, notice.text),
         statusError === null ? null : h('div', { className: 'ls-alert ls-alert-error', role: 'alert' }, statusError),
+        status?.importsWarning
+          ? h('div', { className: 'ls-alert', role: 'status' }, status.importsWarning)
+          : null,
 
         h('section', { className: 'ls-card' },
           h('div', { className: 'ls-card-head' },

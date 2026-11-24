@@ -164,11 +164,24 @@ test('import writes a durable session and registers the chosen directory', async
   assert.notEqual(second.localSessionId, result.localSessionId)
 })
 
-test('existing import records are re-attached to their workspace', async () => {
+test('existing import records are re-attached and corrupt ones detached', async () => {
   const attached = []
+  const detached = []
+  const archived = []
+  const notFound = new Error('not found')
+  notFound.name = 'SessionPersistenceNotFoundError'
+  const corruption = new Error('stored log is corrupt: step/start does not match')
+  corruption.name = 'SessionPersistenceCorruptionError'
   const persistence = {
-    async stat(id) {
-      return id === 'session-good' ? { header: { id } } : undefined
+    async open(id) {
+      if (id === 'session-good') {
+        return {
+          async read() { return { events: [], eventState: 'detached' } },
+          async close() {},
+        }
+      }
+      if (id === 'session-corrupt') throw corruption
+      throw notFound
     },
   }
   const workspaces = {
@@ -178,16 +191,26 @@ test('existing import records are re-attached to their workspace', async () => {
         path: directory,
         title,
         async attachSession(id) { attached.push(id) },
+        async detachSession(id) { detached.push(id) },
       }
     },
+    get() {
+      return { async detachSession(id) { detached.push(id) } }
+    },
+    async archiveSession(id) { archived.push(id) },
   }
   const { attachImportRecords } = await import('../lib/import.js')
   const warnings = await attachImportRecords([
-    { localSessionId: 'session-good', targetDir: '/tmp' },
-    { localSessionId: 'session-missing', targetDir: '/tmp' },
+    { localSessionId: 'session-good', targetDir: '/tmp', workspaceId: 'ws-repair' },
+    { localSessionId: 'session-missing', targetDir: '/tmp', workspaceId: 'ws-repair' },
+    { localSessionId: 'session-corrupt', targetDir: '/tmp', workspaceId: 'ws-repair' },
   ], { sessionPersistence: persistence, workspaceRegistry: workspaces })
-  assert.deepEqual(warnings, [])
+  assert.equal(warnings.length, 1)
+  assert.equal(warnings[0].localSessionId, 'session-corrupt')
+  assert.equal(warnings[0].corrupt, true)
   assert.deepEqual(attached, ['session-good'])
+  assert.deepEqual(detached, ['session-corrupt'])
+  assert.deepEqual(archived, ['session-corrupt'])
 })
 
 test('import target must be an existing absolute directory', async () => {

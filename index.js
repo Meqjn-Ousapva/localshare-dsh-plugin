@@ -10,10 +10,10 @@ import path from 'node:path'
 import { LocalShareNode, LocalShareError, DEFAULT_PORT, parseAddress, readJsonBody, sendJson } from './lib/protocol.js'
 import { loadIdentity } from './lib/identity.js'
 import { buildShareFromQuery, listShareableSessions, shareMeta } from './lib/share.js'
-import { attachImportRecords, importShareToSession } from './lib/import.js'
+import { attachImportRecords, importShareToSession, inspectStoredSession } from './lib/import.js'
 import { loadImports, saveImports } from './lib/imports.js'
 
-const VERSION = '0.1.2'
+const VERSION = '0.1.3'
 const UI_PREFIX = '/api/localshare'
 const UI_BODY_BYTES = 64 * 1024
 const REBUILD_DELAY_MS = 700
@@ -121,9 +121,22 @@ export async function apply(ctx, config = {}) {
     void attachImportRecords(importRecords, {
       sessionPersistence: scope.sessionPersistence,
       workspaceRegistry: scope.workspaceRegistry,
-    }).then((warnings) => {
+    }).then(async (warnings) => {
+      const corruptIds = new Set(warnings.filter(warning => warning.corrupt === true).map(warning => warning.localSessionId))
+      if (corruptIds.size > 0) {
+        importRecords = importRecords.filter(record => !corruptIds.has(record.localSessionId))
+        try {
+          await saveImports(importsFile, importRecords)
+        } catch {
+          // The record removal still applies in memory; a later write can retry.
+        }
+      }
       const first = warnings[0]
-      if (first !== undefined) importsWarning = `无法挂接已导入会话 ${first.localSessionId}：${first.message}`
+      if (first !== undefined) {
+        importsWarning = first.corrupt === true
+          ? `旧导入会话 ${first.localSessionId} 的日志已损坏，已从工作区移除并清除导入记录。请重新导入该共享。`
+          : `无法挂接已导入会话 ${first.localSessionId}：${first.message}`
+      }
     })
     return () => {}
   })
@@ -194,22 +207,37 @@ export async function apply(ctx, config = {}) {
     const existing = importRecords.find(record => record.sourcePeerId === peerId && record.sourceSessionId === sessionId)
     if (existing !== undefined) {
       if (persistence !== undefined) {
-        try {
-          if (await persistence.stat(existing.localSessionId) !== undefined) {
-            const workspaces = ctx.get('workspaceRegistry')
-            if (workspaces === undefined) return { ...existing, alreadyImported: true }
-            const warnings = await attachImportRecords([existing], {
-              sessionPersistence: persistence,
-              workspaceRegistry: workspaces,
-            })
-            return {
-              ...existing,
-              alreadyImported: true,
-              ...(warnings[0] === undefined ? {} : { warning: warnings[0].message }),
+        const inspection = await inspectStoredSession(persistence, existing.localSessionId)
+        if (inspection.status === 'healthy') {
+          const workspaces = ctx.get('workspaceRegistry')
+          if (workspaces === undefined) return { ...existing, alreadyImported: true }
+          const warnings = await attachImportRecords([existing], {
+            sessionPersistence: persistence,
+            workspaceRegistry: workspaces,
+          })
+          return {
+            ...existing,
+            alreadyImported: true,
+            ...(warnings[0] === undefined ? {} : { warning: warnings[0].message }),
+          }
+        }
+        if (inspection.status === 'corrupt') {
+          const workspaces = ctx.get('workspaceRegistry')
+          if (workspaces !== undefined) {
+            try {
+              await workspaces.archiveSession(existing.localSessionId, { stopActivity: true })
+            } catch {
+              // Best-effort hide; the old log remains on disk.
+            }
+            if (typeof workspaces.get === 'function') {
+              try {
+                const workspace = workspaces.get(existing.workspaceId)
+                if (workspace !== undefined) await workspace.detachSession(existing.localSessionId)
+              } catch {
+                // Best-effort detach.
+              }
             }
           }
-        } catch {
-          // Treat an unreadable provenance entry as stale and import anew.
         }
       }
       importRecords = importRecords.filter(record => record !== existing)
