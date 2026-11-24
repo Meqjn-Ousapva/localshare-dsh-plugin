@@ -89,6 +89,25 @@ test('import builder creates a closed, unseeded transcript with a title', () => 
   )
 })
 
+test('import builder writes the chosen permission preset knobs', () => {
+  const built = buildImportedSessionEvents({
+    title: 'Permission check',
+    messages: [{ role: 'user', text: 'hello' }],
+  }, {
+    cwd: '/tmp/local-work',
+    permission: { preset: 'danger-full-access', sandbox: 'danger-full-access', approval: 'never' },
+  })
+  assert.deepEqual(
+    built.events.slice(0, 3).map(event => event.type),
+    ['permission/preset', 'sandbox/mode', 'approval/policy'],
+  )
+  assert.deepEqual(built.events[0].data, { preset: 'danger-full-access' })
+  assert.deepEqual(built.events[1].data, { mode: 'danger-full-access' })
+  assert.deepEqual(built.events[2].data, { policy: 'never' })
+  const firstUser = built.events.find(event => event.type === 'user/message')
+  assert.deepEqual(built.events.at(-1).data.messageSeqs, [firstUser.seq])
+})
+
 test('import builder rejects a share with no visible messages', () => {
   assert.throws(
     () => buildImportedSessionEvents({ title: 'Empty', messages: [] }, { cwd: '/tmp' }),

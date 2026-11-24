@@ -79,6 +79,23 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
       }
     },
   }
+  const permissionPresets = {
+    catalog() {
+      return {
+        options: [
+          { value: 'workspace-write', name: 'Workspace write' },
+          { value: 'danger-full-access', name: 'Full access' },
+        ],
+        defaultOptions: [],
+        defaultPreset: 'workspace-write',
+      }
+    },
+    resolve(name) {
+      if (name === 'danger-full-access') return { sandbox: 'danger-full-access', approval: 'never' }
+      if (name === 'workspace-write') return { sandbox: 'workspace-write', approval: 'ask' }
+      throw new Error(`unknown preset ${name}`)
+    },
+  }
   const workspaceCalls = []
   const workspaceAttached = []
   const workspaceRegistry = {
@@ -95,6 +112,7 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   const ctx = {
     sessionPersistence,
     workspaceRegistry,
+    permissionPresets,
     get(name) { return this[name] },
     inject(_deps, callback) { return callback(this) },
     effect(callback) {
@@ -210,6 +228,7 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
     peerId: BETA,
     sessionId: 'session-import',
     targetDir: directory,
+    permissionPreset: 'danger-full-access',
   })
   assert.equal(imported.ok, true)
   assert.match(imported.localSessionId, /^session-/)
@@ -218,11 +237,19 @@ test('Host apply wires status, sessions, sharing, peers, and the agent tool', as
   assert.equal(createdSessions.length, 1)
   assert.equal(createdSessions[0].cwd, await realpath(directory))
   assert.equal(createdSessions[0].isSeeded, false)
+  assert.deepEqual(appendedEvents.slice(0, 3).map(event => event.type), ['permission/preset', 'sandbox/mode', 'approval/policy'])
+  assert.equal(appendedEvents[0].data.preset, 'danger-full-access')
+  assert.equal(appendedEvents[2].data.policy, 'never')
   assert.equal(appendedEvents.at(-1).type, 'session/title')
   assert.equal(workspaceCalls.length, 1)
   assert.equal(workspaceCalls[0].directory, await realpath(directory))
   assert.equal(workspaceCalls[0].title, path.basename(directory))
   assert.deepEqual(workspaceAttached, [imported.localSessionId])
+
+  const presets = await tool.execute({ action: 'list_permission_presets' })
+  assert.equal(presets.ok, true)
+  assert.equal(presets.defaultPreset, 'workspace-write')
+  assert.equal(presets.options.length, 2)
 
   const importedStatus = await callRoute('/api/localshare/status')
   assert.equal(importedStatus.json.imports.length, 1)

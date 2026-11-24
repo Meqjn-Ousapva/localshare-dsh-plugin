@@ -13,7 +13,7 @@ import { buildShareFromQuery, listShareableSessions, shareMeta } from './lib/sha
 import { attachImportRecords, importShareToSession } from './lib/import.js'
 import { loadImports, saveImports } from './lib/imports.js'
 
-const VERSION = '0.1.1'
+const VERSION = '0.1.2'
 const UI_PREFIX = '/api/localshare'
 const UI_BODY_BYTES = 64 * 1024
 const REBUILD_DELAY_MS = 700
@@ -31,6 +31,27 @@ function requireString(value, field) {
     throw new LocalShareError(`request/${field}`, `缺少 ${field}`)
   }
   return value.trim()
+}
+
+/**
+ * Resolve one local permission preset into its durable knob bundle.
+ * @param {any} ctx
+ * @param {unknown} name
+ * @returns {{ preset: string, sandbox: string, approval: string } | undefined}
+ */
+function resolvePermissionPreset(ctx, name) {
+  if (typeof name !== 'string' || name.trim() === '') return undefined
+  const preset = name.trim()
+  const service = ctx.get('permissionPresets')
+  if (service === undefined) {
+    throw new LocalShareError('import/permission-unavailable', '当前 Harness 没有提供权限预设服务')
+  }
+  try {
+    const spec = service.resolve(preset)
+    return { preset, sandbox: spec.sandbox, approval: spec.approval }
+  } catch (error) {
+    throw new LocalShareError('import/permission', `权限预设不可用：${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 /**
@@ -147,7 +168,24 @@ export async function apply(ctx, config = {}) {
     }
   }
 
-  const importIncomingShare = async (peerId, sessionId, targetDir) => {
+  const listPermissionPresets = () => {
+    const service = ctx.get('permissionPresets')
+    if (service === undefined) return { ok: true, options: [], defaultPreset: null }
+    const catalog = service.catalog()
+    const options = []
+    for (const option of catalog.options) {
+      if (option.value === 'custom') continue
+      try {
+        const spec = service.resolve(option.value)
+        options.push({ ...option, sandbox: spec.sandbox, approval: spec.approval })
+      } catch {
+        // An option that cannot resolve right now is not offerable for import.
+      }
+    }
+    return { ok: true, options, defaultPreset: catalog.defaultPreset }
+  }
+
+  const importIncomingShare = async (peerId, sessionId, targetDir, permissionPreset) => {
     const item = node.incoming.get(`${peerId}:${sessionId}`)
     if (item === undefined) {
       throw new LocalShareError('import/not-found', '没有找到这条共享，可能已被对方撤回', 404)
@@ -176,11 +214,13 @@ export async function apply(ctx, config = {}) {
       }
       importRecords = importRecords.filter(record => record !== existing)
     }
+    const permission = resolvePermissionPreset(ctx, permissionPreset)
     const result = await importShareToSession({
       share: item.share,
       targetDir,
       sessionPersistence: persistence,
       workspaceRegistry: ctx.get('workspaceRegistry'),
+      permission,
     })
     const record = {
       localSessionId: result.localSessionId,
@@ -304,6 +344,10 @@ export async function apply(ctx, config = {}) {
         sendJson(res, 200, { ok: true, ...node.listShares() })
         return
       }
+      if (req.method === 'GET' && sub === '/permission-presets') {
+        sendJson(res, 200, listPermissionPresets())
+        return
+      }
       if (req.method === 'POST' && sub === '/peers') {
         const body = await readJsonBody(req, UI_BODY_BYTES)
         const peer = await node.addPeer(requireString(body.address, 'address'))
@@ -334,6 +378,7 @@ export async function apply(ctx, config = {}) {
           requireString(body.peerId, 'peerId'),
           requireString(body.sessionId, 'sessionId'),
           requireString(body.targetDir, 'targetDir'),
+          typeof body.permissionPreset === 'string' ? body.permissionPreset : undefined,
         )
         sendJson(res, 200, { ok: true, ...result })
         return
@@ -361,21 +406,23 @@ export async function apply(ctx, config = {}) {
     name: 'localshare',
     description: 'Discover LocalShare peers on other DSH machines by explicit host:port and share read-only conversation transcripts. '
       + 'Actions: status, list_peers, add_peer (address), remove_peer (peerId), list_sessions, share_session (sessionId), '
-      + 'unshare_session (sessionId), list_shares (metadata only), import_share (peerId, sessionId, targetDir). '
+      + 'unshare_session (sessionId), list_shares (metadata only), import_share (peerId, sessionId, targetDir, permissionPreset). '
       + 'import_share creates a new local Session from a received share in an existing local directory; it copies no peer files. '
+      + 'permissionPreset is optional and must come from localshare list_permission_presets; ask the user before choosing a preset whose approval is never. '
       + 'Ask the user which local directory to use before importing. Discovery is manual in this phase; the peer must also run LocalShare.',
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['status', 'list_peers', 'add_peer', 'remove_peer', 'list_sessions', 'share_session', 'unshare_session', 'list_shares', 'import_share'],
+          enum: ['status', 'list_peers', 'add_peer', 'remove_peer', 'list_sessions', 'share_session', 'unshare_session', 'list_shares', 'list_permission_presets', 'import_share'],
           description: 'Operation to perform.',
         },
         address: { type: 'string', description: 'Peer address for add_peer, e.g. 192.168.1.23:17817.' },
         peerId: { type: 'string', description: 'Peer identity for remove_peer.' },
         sessionId: { type: 'string', description: 'Conversation identity for share_session, unshare_session, or import_share.' },
         targetDir: { type: 'string', description: 'Existing absolute local directory for import_share; ask the user to choose it.' },
+        permissionPreset: { type: 'string', description: 'Optional local permission preset for import_share; list_permission_presets returns the available values.' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -409,6 +456,8 @@ export async function apply(ctx, config = {}) {
           return { ok: true, removed: await unshareSession(requireString(args.sessionId, 'sessionId')) }
         case 'list_shares':
           return { ok: true, ...node.snapshot().shares }
+        case 'list_permission_presets':
+          return listPermissionPresets()
         case 'import_share':
           return {
             ok: true,
@@ -416,6 +465,7 @@ export async function apply(ctx, config = {}) {
               requireString(args.peerId, 'peerId'),
               requireString(args.sessionId, 'sessionId'),
               requireString(args.targetDir, 'targetDir'),
+              typeof args.permissionPreset === 'string' ? args.permissionPreset : undefined,
             ),
           }
         default:

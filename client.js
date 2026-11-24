@@ -38,6 +38,11 @@ window.__ModuleLoader__.load({
       importing: 'Importing...',
       cancel: 'Cancel',
       importedBadge: 'Imported',
+      permissionPreset: 'Permission preset',
+      permissionAsk: 'asks each time',
+      permissionNever: 'no prompts',
+      permissionHint: 'Choose the imported session\'s permission preset. A preset marked “no prompts” grants tool access without per-call approval; choose it deliberately.',
+      permissionUnavailable: 'No permission presets are available; the imported session keeps the local default.',
       importDone: 'Conversation imported. Opening the local session...',
       importAlready: 'This conversation was already imported; opening it.',
       importEmpty: 'This share has no visible messages to import.',
@@ -117,6 +122,11 @@ window.__ModuleLoader__.load({
       importing: '导入中…',
       cancel: '取消',
       importedBadge: '已导入',
+      permissionPreset: '权限预设',
+      permissionAsk: '逐次询问',
+      permissionNever: '不再询问',
+      permissionHint: '选择导入会话的权限预设。标记“不再询问”的预设会让工具调用跳过逐次审批，请谨慎选择。',
+      permissionUnavailable: '当前没有可用的权限预设，导入会话将使用本机默认设置。',
       importDone: '会话已导入，正在打开本机会话…',
       importAlready: '这条共享已经导入过，正在打开。',
       importEmpty: '这条共享没有可导入的可见消息。',
@@ -261,6 +271,8 @@ window.__ModuleLoader__.load({
       const [importingKey, setImportingKey] = React.useState(null)
       const [targetDir, setTargetDir] = React.useState('')
       const [importError, setImportError] = React.useState(null)
+      const [permissionOptions, setPermissionOptions] = React.useState([])
+      const [permissionPreset, setPermissionPreset] = React.useState('')
       const aliveRef = React.useRef(true)
       const revisionRef = React.useRef(-1)
       const startedRef = React.useRef(0)
@@ -305,16 +317,35 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      const loadPermissionPresets = React.useCallback(async () => {
+        try {
+          const data = await api('/permission-presets')
+          if (!aliveRef.current) return
+          const options = Array.isArray(data.options) ? data.options : []
+          setPermissionOptions(options)
+          setPermissionPreset(current => {
+            if (current !== '' && options.some(option => option.value === current)) return current
+            if (typeof data.defaultPreset === 'string' && options.some(option => option.value === data.defaultPreset)) {
+              return data.defaultPreset
+            }
+            return options[0]?.value ?? ''
+          })
+        } catch {
+          // The import still works without a preset; the session keeps the local default.
+        }
+      }, [])
+
       React.useEffect(() => {
         aliveRef.current = true
         void loadStatus()
         void loadSessions()
+        void loadPermissionPresets()
         const timer = setInterval(() => { void loadStatus() }, 4000)
         return () => {
           aliveRef.current = false
           clearInterval(timer)
         }
-      }, [loadStatus, loadSessions])
+      }, [loadStatus, loadSessions, loadPermissionPresets])
 
       const run = async (key, operation, successText) => {
         setBusy(key)
@@ -412,7 +443,12 @@ window.__ModuleLoader__.load({
         try {
           const result = await api('/import', {
             method: 'POST',
-            body: JSON.stringify({ peerId: item.peerId, sessionId: item.sessionId, targetDir: directory }),
+            body: JSON.stringify({
+              peerId: item.peerId,
+              sessionId: item.sessionId,
+              targetDir: directory,
+              ...(permissionPreset === '' ? {} : { permissionPreset }),
+            }),
           })
           const base = result.alreadyImported ? tr('importAlready') : tr('importDone')
           setNotice({ kind: 'ok', text: result.warning ? `${base} ${result.warning}` : base })
@@ -701,6 +737,27 @@ window.__ModuleLoader__.load({
                         }, tr('chooseDirectory')),
                       ),
                     ),
+                    permissionOptions.length > 0
+                      ? h(React.Fragment, null,
+                        h('div', { className: 'ls-kv' },
+                          h('span', { className: 'ls-key' }, tr('permissionPreset')),
+                          h('div', { className: 'ls-value' },
+                            h('select', {
+                              className: 'ls-select',
+                              value: permissionPreset,
+                              disabled: importing,
+                              onChange: event => { setPermissionPreset(event.target.value) },
+                              'aria-label': tr('permissionPreset'),
+                            }, permissionOptions.map(option => h('option', { key: option.value, value: option.value },
+                              `${option.name}${option.approval === 'never'
+                                ? ` · ${tr('permissionNever')}`
+                                : option.approval === 'ask' ? ` · ${tr('permissionAsk')}` : ''}`,
+                            ))),
+                          ),
+                        ),
+                        h('p', { className: 'ls-muted' }, tr('permissionHint')),
+                      )
+                      : h('p', { className: 'ls-muted' }, tr('permissionUnavailable')),
                     importError === null ? null : h('p', { className: 'ls-error', role: 'alert' }, importError),
                     h('div', { className: 'ls-form' },
                       h('button', {
@@ -749,6 +806,7 @@ window.__ModuleLoader__.load({
 .ls-button-primary { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }
 .ls-input { flex:1; min-width:0; padding:7px 9px; border:0.5px solid var(--dsw-alias-border-l1); border-radius:6px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); font:inherit; font-size:13px; }
 .ls-input:focus { outline:1px solid var(--dsw-alias-brand-primary); outline-offset:-1px; }
+.ls-select { min-width:180px; padding:7px 9px; border:0.5px solid var(--dsw-alias-border-l1); border-radius:6px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); font:inherit; font-size:13px; }
 .ls-form { display:flex; gap:8px; }
 .ls-badge { padding:3px 7px; border:0.5px solid var(--dsw-alias-border-l1); border-radius:999px; color:var(--dsw-alias-label-secondary); font-size:11px; line-height:1; white-space:nowrap; }
 .ls-badge-ok { border-color:var(--dsw-alias-state-success-primary); color:var(--dsw-alias-state-success-primary); }
